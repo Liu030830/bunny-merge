@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f9e6ea">
+  <meta name="description" content="把软乎乎的小兔兔，合成一只大兔兔。手机上拖动瞄准，松手落下的免费合成小游戏。">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>兔兔碰碰 · 合成大兔兔</title>
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="preload" as="image" href="./assets/rabbits-01.png">
+  <link rel="preload" as="image" href="./assets/rabbits-02.png">
+  <link rel="preload" as="image" href="./assets/rabbits-03.png">
+</head>
+<body>
+  <main class="game-app">
+    <header class="topbar">
+      <div class="brand"><canvas id="brand-art" width="100" height="100" aria-hidden="true"></canvas><div><h1>兔兔碰碰<span>合成大兔兔</span></h1></div></div>
+      <div class="top-actions"><button id="sound-button" class="icon-button" aria-label="开启音效" aria-pressed="false"><svg class="sound-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4zM15 8c3 2 3 6 0 8m3-11c5 4 5 10 0 14"/></svg><svg class="sound-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4zM16 9l5 6m0-6-5 6"/></svg></button><button id="help-button" class="icon-button help-button" aria-label="游戏玩法">?</button></div>
+    </header>
+
+    <section class="scorebar" aria-label="游戏分数">
+      <div class="score-current"><span class="stat-label">本局得分</span><strong id="score">0</strong></div>
+      <div class="score-best"><span class="stat-label"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 2.3 4.8 5.3.8-3.8 3.7.9 5.2-4.7-2.4-4.7 2.4.9-5.2L2.4 7.6l5.3-.8z"/></svg>最高纪录</span><strong id="best">0</strong></div>
+      <div class="next-bunny"><span class="stat-label">下一只</span><canvas id="next-canvas" width="80" height="80" aria-label="下一只兔兔"></canvas></div>
+    </section>
+
+    <div class="field-heading"><span><i></i>兔兔的小花园</span><span id="field-status">今天也要软乎乎</span></div>
+    <section id="board" class="board" aria-label="兔兔合成游戏区">
+      <canvas id="game-canvas" tabindex="0" role="application" aria-label="拖动瞄准，松手投放兔子。也可用方向键瞄准，空格投放。"></canvas>
+      <div id="welcome" class="welcome">
+        <span class="welcome-tag">碰一碰，长大一点点</span>
+        <canvas id="welcome-art" class="welcome-art" width="520" height="320" aria-hidden="true"></canvas>
+        <h2>小兔兔，大团圆</h2>
+        <p>让一样的兔兔贴贴<br>看看能合成多大的惊喜</p>
+        <button id="start-button" class="primary-button" disabled>兔兔正在赶来…</button>
+        <span class="welcome-hint">拖动瞄准 · 松手落下</span>
+      </div>
+      <div id="pause-overlay" class="pause-overlay" hidden><span class="pause-symbol" aria-hidden="true">Ⅱ</span><h2>兔兔休息中</h2><button id="resume-button" class="primary-button">继续贴贴</button></div>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </section>
+
+    <div class="play-hint" id="play-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12V5a2 2 0 0 1 4 0v6m0-2a2 2 0 0 1 3 1 2 2 0 0 1 3 1v5c0 3-2 5-5 5h-2c-2 0-3-1-4-3l-4-5c-1-2 1-3 3-1l2 2"/></svg><span>拖动瞄准，松手让兔兔落下</span></div>
+    <nav class="game-controls" aria-label="游戏控制"><button id="pause-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span>暂停</span></button><button id="collection-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v15M3 4c4-1 6-1 9 1 3-2 5-2 9-1v15c-4-1-6-1-9 1-3-2-5-2-9-1z"/></svg><span>兔兔图鉴</span><em id="collection-count">…</em></button><button id="restart-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></svg><span>重来</span></button></nav>
+    <section class="evolution" aria-label="兔兔合成路线"><span>从小可爱，到大可爱</span><div id="evolution-strip"></div></section>
+    <p class="sr-only" id="game-announcement" aria-live="polite"></p>
+  </main>
+
+  <dialog id="game-dialog" aria-labelledby="dialog-title"><div class="dialog-header"><span class="dialog-label">兔兔碰碰</span><button id="close-dialog" class="icon-button" aria-label="关闭弹窗">×</button></div><div id="dialog-content"></div></dialog>
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>
