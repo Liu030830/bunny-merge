@@ -19,7 +19,7 @@ function readPage() {
   return { html, scripts: scripts.map(([, , source]) => source) };
 }
 
-function createBrowser(html, { legacy = false, saved } = {}) {
+function createBrowser(html, { legacy = false, saved, reducedMotion = false } = {}) {
   let now = 0;
   let nextTimer = 1;
   let reloads = 0;
@@ -152,12 +152,28 @@ function createBrowser(html, { legacy = false, saved } = {}) {
       this.clientWidth = 0;
       this.clientHeight = 0;
       this.draws = [];
+      this.scales = [];
+      this.drawMatrices = [];
       this.context = { canvas: this, globalAlpha: 1 };
       for (const method of ['save', 'restore', 'translate', 'rotate', 'scale', 'transform', 'setTransform',
         'resetTransform', 'clearRect', 'fillRect', 'strokeRect', 'beginPath', 'closePath', 'moveTo', 'lineTo',
         'ellipse', 'arc', 'quadraticCurveTo', 'bezierCurveTo', 'clip', 'fill', 'stroke', 'fillText',
         'strokeText', 'setLineDash']) this.context[method] = () => {};
-      this.context.drawImage = (...args) => this.draws.push(args);
+      let matrix = [1, 0, 0, 1, 0, 0];
+      const stack = [];
+      const transform = (a, b, c, d, e, f) => {
+        const [ma, mb, mc, md, me, mf] = matrix;
+        matrix = [ma*a+mc*b, mb*a+md*b, ma*c+mc*d, mb*c+md*d, ma*e+mc*f+me, mb*e+md*f+mf];
+      };
+      this.context.save = () => stack.push([...matrix]);
+      this.context.restore = () => { if (stack.length) matrix = stack.pop(); };
+      this.context.setTransform = (...values) => { matrix = values; };
+      this.context.resetTransform = () => { matrix = [1, 0, 0, 1, 0, 0]; };
+      this.context.transform = transform;
+      this.context.translate = (x, y) => transform(1, 0, 0, 1, x, y);
+      this.context.rotate = angle => transform(Math.cos(angle), Math.sin(angle), -Math.sin(angle), Math.cos(angle), 0, 0);
+      this.context.scale = (x, y) => { this.scales.push([x, y]); transform(x, 0, 0, y, 0, 0); };
+      this.context.drawImage = (...args) => { this.draws.push(args); this.drawMatrices.push([...matrix]); };
       this.context.measureText = text => ({ width: String(text).length * 8 });
       this.context.getImageData = () => ({ data: new Uint8ClampedArray(4) });
       canvases.push(this);
@@ -239,7 +255,7 @@ function createBrowser(html, { legacy = false, saved } = {}) {
     innerHeight: 844,
     console: { log() {}, info() {}, warn() {}, error: (...args) => errors.push(args.map(value => value?.stack || String(value)).join(' ')) },
     URL,
-    matchMedia: () => ({ matches: false, addListener() {}, addEventListener() {} }),
+    matchMedia: query => ({ matches: reducedMotion && query.includes('prefers-reduced-motion'), addListener() {}, addEventListener() {} }),
     getComputedStyle: () => ({ width: '330px', height: '450px' }),
     setTimeout: (callback, delay = 0) => {
       const id = nextTimer++;
@@ -296,9 +312,9 @@ function createBrowser(html, { legacy = false, saved } = {}) {
   };
 }
 
-function boot({ legacy = false, watchdogOnly = false, saved } = {}) {
+function boot({ legacy = false, watchdogOnly = false, saved, reducedMotion = false } = {}) {
   const { html, scripts } = readPage();
-  const browser = createBrowser(html, { legacy, saved });
+  const browser = createBrowser(html, { legacy, saved, reducedMotion });
   for (const source of scripts) {
     browser.evaluate(source);
     if (watchdogOnly && typeof browser.context.__bunnyBootFailed === 'function') return browser;
@@ -596,5 +612,64 @@ test('the final rabbit pair clears for 500 points and a bonus coin, including th
     const refreshed = boot({ saved });
     assertCoinUi(refreshed, coins, 2000 - finalScore % 2000);
     assert.equal(refreshed.readSaved().game.bonusCoins, 1, 'refresh must preserve the extra final-pair coin');
+  }
+});
+
+test('a real landing visibly squashes, freezes while paused, recovers, and respects reduced motion', () => {
+  function fallingGame(reducedMotion) {
+    const fixture = gameFixture({ score: 0, phase: 'playing', bodies: [[0, 180, 400]] });
+    fixture.saved.game.bodies[0].vy = 440;
+    const browser = boot({ saved: fixture.saved, reducedMotion });
+    assertCoinUi(browser, 0);
+    browser.elements.get('resume-button').click();
+    return browser;
+  }
+  function renderBody(browser, time) {
+    const canvas = browser.elements.get('game-canvas');
+    canvas.scales.length = canvas.draws.length = canvas.drawMatrices.length = 0;
+    browser.frame(time);
+    // The first sprite is the falling rabbit; the aim preview is drawn afterward.
+    assert.ok(canvas.drawMatrices.length, 'the live rabbit must be rendered');
+    const matrix = canvas.drawMatrices[0];
+    const baseline = canvas.width / 360;
+    return {
+      x: Math.hypot(matrix[0], matrix[2]) / baseline,
+      y: Math.hypot(matrix[1], matrix[3]) / baseline,
+      scaleCalls: canvas.scales.map(values => [...values]),
+    };
+  }
+  function assertUnit(transform, message) {
+    assert.ok(Math.abs(transform.x - 1) < 1e-8 && Math.abs(transform.y - 1) < 1e-8, message);
+  }
+
+  const browser = fallingGame(false);
+  let time = 1;
+  assertUnit(renderBody(browser, time), 'the falling rabbit starts at its normal proportions');
+  let impact;
+  for (let i = 0; i < 120; i++) {
+    const transform = renderBody(browser, time += 16);
+    if (transform.x > 1.001 && transform.y < .999) { impact = transform; break; }
+  }
+  assert.ok(impact, 'a real floor collision must create a visible wider, shorter rabbit');
+  assert.ok(impact.scaleCalls.some(([x, y]) => x > 1 && y < 1), 'the impact must use an anisotropic canvas scale');
+  assert.ok(impact.x <= 1.1 && impact.y >= .89, 'the deformation must remain gentle');
+
+  browser.elements.get('pause-button').click();
+  assert.equal(browser.elements.get('pause-overlay').hidden, false);
+  for (const elapsed of [16, 1500]) {
+    const paused = renderBody(browser, time += elapsed);
+    assert.ok(Math.abs(paused.x - impact.x) < 1e-10 && Math.abs(paused.y - impact.y) < 1e-10,
+      'pausing must freeze the collision animation rather than letting it expire');
+  }
+  browser.elements.get('resume-button').click();
+  let recovered;
+  for (let i = 0; i < 180; i++) recovered = renderBody(browser, time += 16);
+  assertUnit(recovered, 'the impact transform must restore normal proportions after the rabbit settles');
+
+  const reduced = fallingGame(true);
+  for (let i = 0; i <= 180; i++) {
+    const transform = renderBody(reduced, 1 + i * 16);
+    assertUnit(transform, 'reduced motion must disable collision squash throughout the real fall and landing');
+    assert.ok(transform.scaleCalls.every(([x, y]) => Math.abs(x - y) < 1e-10), 'reduced motion must not apply anisotropic scaling');
   }
 });

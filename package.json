@@ -1,6 +1,6 @@
 {
   "name":"bunny-merge",
-  "version":"1.1.1",
+  "version":"1.2.0",
   "private":true,
   "type":"module",
   "scripts":{"build":"node build.mjs","test":"node --test physics.test.mjs startup.test.mjs"},

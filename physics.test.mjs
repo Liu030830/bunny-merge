@@ -31,13 +31,96 @@ test('gravity settles a rabbit on the floor without penetrating the walls', () =
   assert.ok(Number.isFinite(body.x + body.y + body.vx + body.vy));
 });
 
+test('a real drop makes a small airborne bounce, a weaker second rebound and eventually sleeps', () => {
+  const world=new GameWorld({random:()=>0}),body=world.drop(180),bounces=[];
+  let previousVy=0,active=-1;
+  for(let i=0;i<8*120;i++) {
+    world.step(1/120);
+    const gap=world.height-world.getBounds(body).max.y;
+    if(previousVy>8 && body.vy< -8 && gap<1) {
+      bounces.push({speed:-body.vy,height:gap});active=bounces.length-1;
+    }
+    if(active>=0)bounces[active].height=Math.max(bounces[active].height,gap);
+    previousVy=body.vy;
+  }
+  assert.ok(bounces.length>=2,'the real collision response should produce a second, smaller rebound');
+  assert.ok(bounces[0].height>1 && bounces[0].height<35,`first airborne bounce height: ${bounces[0].height}`);
+  assert.ok(bounces[1].speed<bounces[0].speed,'the floor must not add energy to later rebounds');
+  assert.ok(bounces[1].height<bounces[0].height);
+  assert.equal(body.isSleeping,true);assert.equal(body.angularVelocity,0);
+});
+
+test('a substantial landing reports one visible impact per collision start and none while resting', () => {
+  const impacts=[];
+  let world;
+  world=new GameWorld({random:()=>0,onImpact:event=>impacts.push({event:event,time:world.time})});
+  const body=world.drop(180);
+  run(world,4);
+  assert.ok(impacts.length>=1,'falling onto the floor must notify the impact animation');
+  const first=impacts[0];
+  assert.equal(first.event.bodyId,body.id);
+  assert.ok(Number.isFinite(first.event.x+first.event.y));
+  assert.ok(Math.abs(first.event.y-world.height)<1,'impact coordinates should mark the real bottom of the silhouette');
+  assert.ok(first.event.strength>=.25&&first.event.strength<=1);
+  assert.equal(impacts.filter(item=>item.time===first.time&&item.event.bodyId===body.id).length,1,'the compound feet must not create duplicate body impacts');
+  const count=impacts.length;
+  run(world,4);
+  assert.equal(impacts.length,count,'persistent or sleeping contacts must not keep firing impacts');
+  assert.equal(body.isSleeping,true);
+});
+
+test('falling onto a different rabbit reports an impact above the floor', () => {
+  const impacts=[];
+  const world=new GameWorld({random:()=>0,onImpact:event=>impacts.push(event)});
+  const base=world.makeBody(4,180,400);
+  world.bodies.push(base);run(world,4);
+  impacts.length=0;
+  const falling=world.drop(base.x);
+  run(world,1.5);
+  assert.ok(impacts.some(event=>event.bodyId===falling.id && event.y<world.height-20),'landing on a pile must produce its own real contact event');
+  assert.equal(world.score,0,'the fixture must collide without merging');
+});
+
+test('fast descent with only lateral rabbit or wall contacts does not emit a landing impact', () => {
+  const impacts=[],world=new GameWorld({onImpact:event=>impacts.push(event)});
+  world.bodies.push(world.makeBody(0,140,300,0,400,1),world.makeBody(1,170,320,0,0,1));
+  world.step(1/120);
+  assert.ok(world.engine.pairs.collisionStart.length>0,'the fixture must make a real side contact');
+  assert.ok(world.engine.pairs.collisionStart.every(pair=>Math.abs(pair.collision.normal.y)<=.5));
+  assert.equal(impacts.length,0,'a downward velocity alone does not make a lateral contact a landing');
+  const wallImpacts=[],wallWorld=new GameWorld({onImpact:event=>wallImpacts.push(event)});
+  wallWorld.bodies.push(wallWorld.makeBody(0,5,300,-400,400,1));wallWorld.step(1/120);
+  assert.ok(wallWorld.engine.pairs.collisionStart.length>0);
+  assert.equal(wallImpacts.length,0);
+});
+
+test('same-tick merges never report impacts for consumed rabbits or the newly created rabbit', () => {
+  const impacts=[],merges=[];
+  let world;
+  world=new GameWorld({random:()=>0,onImpact:event=>impacts.push({event:event,time:world.time}),
+    onMerge:event=>merges.push({event:event,time:world.time})});
+  const first=world.drop(180);run(world,4);impacts.length=0;
+  const second=world.drop(first.x);run(world,1.5);
+  assert.equal(merges.length,1);
+  assert.ok(impacts.every(item=>item.time!==merges[0].time),'merge feedback takes precedence over a stale contact impact');
+  assert.ok(impacts.every(item=>item.event.bodyId!==first.id&&item.event.bodyId!==second.id),'removed entities must never reach the impact callback');
+});
+
+test('a newborn rabbit in a fast initial overlap does not emit an impact', () => {
+  const impacts=[],world=new GameWorld({onImpact:event=>impacts.push(event)});
+  const body=world.makeBody(0,180,world.height-10,0,400,0);
+  world.bodies.push(body);world.step(1/120);
+  assert.equal(impacts.length,0);
+});
+
 test('matching rabbits merge into exactly one larger rabbit and add points', () => {
   const events = [];
   const world = new GameWorld({ random: () => 0, onMerge: event => events.push(event) });
-  world.drop(180);
-  run(world, 1.2);
-  world.drop(180);
-  run(world, 1.2);
+  const first=world.drop(180);
+  run(world,4);
+  assert.equal(first.isSleeping,true,'the collision fixture should aim at a settled rabbit');
+  world.drop(first.x);
+  run(world,1.5);
   assert.equal(world.bodies.length, 1);
   assert.equal(world.bodies[0].level, 1);
   assert.equal(world.score, LEVELS[1].points);

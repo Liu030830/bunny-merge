@@ -19,6 +19,8 @@ let width = 360, height = 530, lastFrame = 0, lastSave = 0, toastTimer;
 let dialogWasPaused = false, lastFocus, lastScore = -1, lastNext = -1, lastCoins = -1, lastProgress = -1, lastPhase;
 let newRecord = false, effects = [], pops = [];
 const mergePulses = new Map();
+const impactPulses = new Map();
+let lastImpactTone = -1;
 const SPRITE_RADIUS = 100;
 const spriteHalfSize = Math.ceil(SPRITE_RADIUS * Math.max(...LEVELS.reduce((values, _, level) => {
   const bounds = getRabbitShape(level).bounds;
@@ -31,7 +33,7 @@ const sprites = LEVELS.map((_, level) => {
   drawBunny(image.getContext('2d'), spriteHalfSize, spriteHalfSize, SPRITE_RADIUS, level);
   return image;
 });
-const world = new GameWorld({ onMerge: merged, onGameOver: gameOver, onWin: () => {
+const world = new GameWorld({ onMerge: merged, onImpact: impacted, onGameOver: gameOver, onWin: () => {
   toast(`${NAMES[LAST_LEVEL]}来啦！继续合成还有惊喜 ♡`, 3500);
   celebrate(180, height / 2, LAST_LEVEL, 28);
 } });
@@ -68,6 +70,7 @@ function freshGame() {
   closeDialog();
   world.reset(); effects = []; pops = []; newRecord = false;
   mergePulses.clear();
+  impactPulses.clear(); lastImpactTone = -1;
   lastScore = lastNext = lastCoins = lastProgress = -1;
   start();
 }
@@ -172,6 +175,13 @@ function merged(event) {
   tone(520 + event.level * 55,.13); tone(780 + event.level*60,.18,.075,.025);
   save();
 }
+function impacted(event) {
+  if (world.time - lastImpactTone > .1) {
+    tone(95 + event.strength * 55, .075, 0, .012 + event.strength * .012);
+    lastImpactTone = world.time;
+  }
+  if (!reducedMotion) impactPulses.set(event.bodyId, {age:0,bornAt:world.time,strength:event.strength,x:event.x,y:event.y});
+}
 function gameOver() {
   updateStats(); save();
   pointerId = null;
@@ -182,6 +192,7 @@ function gameOver() {
   if (canRevive) $('revive-button').onclick = () => {
     const removed = world.revive();
     if (!removed) return;
+    impactPulses.delete(removed.id);
     dialogWasPaused = false;
     closeDialog();
     setPause(false);
@@ -335,8 +346,8 @@ else {
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', resize);
 }
-function bunny(x,y,r,level,angle=0,alpha=1) {
-  ctx.save();ctx.globalAlpha=alpha;ctx.translate(x,y);ctx.rotate(angle);
+function bunny(x,y,r,level,angle=0,alpha=1,stretchX=1,stretchY=1) {
+  ctx.save();ctx.globalAlpha=alpha;ctx.translate(x,y);ctx.scale(stretchX,stretchY);ctx.rotate(angle);
   ctx.drawImage(sprites[level],-r*spriteExtent,-r*spriteExtent,r*spriteExtent*2,r*spriteExtent*2);ctx.restore();
 }
 function flower(x,y,size,color) {
@@ -382,10 +393,27 @@ function render(time) {
     if(nextAge >= .28 || !world.bodies.some(body => body.id === id)) mergePulses.delete(id);
     else mergePulses.set(id, nextAge);
   });
+  impactPulses.forEach((pulse, id) => {
+    pulse.age = world.time-pulse.bornAt;
+    if (pulse.age >= .28) impactPulses.delete(id);
+  });
   for(const body of world.bodies) {
     const age = mergePulses.get(body.id);
     const scale = age === undefined ? 1 : 1 + .09 * Math.sin(Math.PI * age / .28);
-    bunny(body.x,body.y,body.radius * scale,body.level,body.angle);
+    const impact = impactPulses.get(body.id);
+    let stretchX = 1, stretchY = 1, offsetY = 0;
+    if (impact) {
+      const progress = impact.age / .28;
+      const wave = Math.cos(Math.PI * 3 * progress) * Math.pow(1-progress,2) * impact.strength;
+      stretchX += .085 * wave; stretchY -= .1 * wave;
+      // Compress in world space while keeping the bottom of the silhouette in place.
+      offsetY = (world.getBounds(body).max.y-body.y) * (1-stretchY);
+      ctx.save();ctx.globalAlpha=.35*(1-progress)*impact.strength;
+      ctx.strokeStyle='#d3a5b3';ctx.lineWidth=1.4;ctx.beginPath();
+      ctx.ellipse(impact.x,impact.y-1,body.radius*(.45+progress*.65),body.radius*.07+1,0,0,Math.PI*2);
+      ctx.stroke();ctx.restore();
+    }
+    bunny(body.x,body.y+offsetY,body.radius * scale,body.level,body.angle,1,stretchX,stretchY);
   }
   drawAim();
   if(!world.paused){

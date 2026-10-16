@@ -14,14 +14,14 @@ const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finiteIn = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
 const integerIn = (value, min, max) => Number.isInteger(value) && finiteIn(value, min, max);
 const normalizedAngle = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
-const BODY_OPTIONS = {friction:.55, frictionStatic:.85, frictionAir:.025, restitution:.12, density:.001, slop:.035, sleepThreshold:45};
+const BODY_OPTIONS = {friction:.55, frictionStatic:.85, frictionAir:.025, restitution:.24, density:.001, slop:.035, sleepThreshold:45};
 
 export class GameWorld {
   constructor(options={}) {
     Object.assign(this, {
       width:options.width===undefined ? 360 : options.width,
       height:options.height===undefined ? 530 : options.height,
-      onMerge:options.onMerge, onGameOver:options.onGameOver, onWin:options.onWin,
+      onMerge:options.onMerge, onGameOver:options.onGameOver, onWin:options.onWin, onImpact:options.onImpact,
       random:options.random===undefined ? Math.random : options.random,
     });
     this.dangerY = 115;
@@ -257,18 +257,21 @@ export class GameWorld {
   step(dt) {
     if (this.paused || this.phase!=='playing' || !Number.isFinite(dt) || dt<=0) return;
     this.accumulator += Math.min(dt,.1);
+    const impacted=new Set();
     while (this.accumulator+1e-10>=FIXED_DT && this.phase==='playing' && !this.paused) {
-      this.tick(FIXED_DT);
+      this.tick(FIXED_DT,impacted);
       this.accumulator -= FIXED_DT;
     }
     if (this.paused) this.accumulator = 0;
   }
 
-  tick(dt) {
+  tick(dt,impacted=new Set()) {
     this.time += dt;
     this.cooldown = Math.max(0,this.cooldown-dt);
     this.syncBodies();
+    const beforeImpact=typeof this.onImpact==='function' ? new Map() : null;
     for (const body of this.bodies) {
+      if (beforeImpact) beforeImpact.set(body.rigid.id,{vy:body.vy,age:body.age});
       body.age += dt;
       if (body.isSleeping) continue;
       // Damp angular momentum without forcing the physical shape to an upright angle.
@@ -278,13 +281,34 @@ export class GameWorld {
     // Compound tips can retain a fraction of a pixel of solver slop at the floor.
     // Keep the visible photo outline inside the board without changing its rotation.
     for (const body of this.bodies) this.fitBounds(body);
+    const started=beforeImpact ? this.engine.pairs.collisionStart.slice() : null;
     this.mergeContacts();
+    if (started) this.reportImpacts(started,beforeImpact,impacted);
     const overflow = this.bodies.some(body=>body.age>=2.2 && this.getBounds(body).min.y<this.dangerY);
     this.dangerTime = overflow ? this.dangerTime+dt : 0;
     this.dangerProgress = Math.min(1,this.dangerTime/2);
     if (this.dangerTime>=2) {
       this.phase = 'over';
       this.onGameOver?.({score:this.score});
+    }
+  }
+
+  reportImpacts(pairs,before,impacted) {
+    for (const pair of pairs) {
+      const a=pair.collision.parentA,b=pair.collision.parentB;
+      for (const parent of [a,b]) {
+        const supportY=parent===b ? pair.collision.normal.y : -pair.collision.normal.y;
+        if (supportY<=.5) continue;
+        const body=this.byRigidId.get(parent.id),previous=before.get(parent.id);
+        if (!body || !previous || impacted.has(body.id) || previous.age<=.1 || previous.vy<=140) continue;
+        const other=parent===a ? b : a,otherBefore=before.get(other.id);
+        if (!otherBefore && other!==this.walls[2]) continue;
+        const speed=previous.vy-(otherBefore ? otherBefore.vy : 0);
+        if (speed<=140) continue;
+        impacted.add(body.id);
+        this.onImpact({bodyId:body.id,x:body.x,y:this.getBounds(body).max.y,
+          strength:clamp(.25+.75*(speed-140)/460,.25,1)});
+      }
     }
   }
 
