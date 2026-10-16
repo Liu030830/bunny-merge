@@ -2,7 +2,7 @@ import Matter from './vendor/matter.mjs';
 import { RABBIT_SHAPES, getRabbitShape } from './rabbit-shapes.mjs';
 
 const Body = Matter.Body, Composite = Matter.Composite, Engine = Matter.Engine, Sleeping = Matter.Sleeping;
-const RADII = [18,23,29,36,43,51,60,70,81,93,106,120];
+const RADII = [18,23,29,36,43,51,60,70,81,93,106,120].map(radius=>radius*1.12);
 const COLORS = ['#fff6e7','#d7aa7a','#c8cbd0','#e5b48e','#fffdf2','#c3b6a6','#fff9ee','#f3eadb','#ffffff','#d8bb8d','#c8c1d1','#fff9f0'];
 export const LEVELS = Object.freeze(RABBIT_SHAPES.map((shape, level) => Object.freeze({
   name:shape.name, radius:RADII[level], color:COLORS[level], points:2 ** (level+1),
@@ -232,20 +232,22 @@ export class GameWorld {
     }
     // Validation is atomic, and old circular saves migrate to the real rabbit silhouettes.
     const floorDelta = this.height-data.height, scaleX = this.width/data.width;
+    const resizedBodies=data.bodies.some(saved=>!Number.isFinite(saved.radius)
+      || Math.abs(saved.radius-LEVELS[saved.level].radius)>1e-6);
     const bodies = data.bodies.map(saved=>{
       const body = this.makeBody(saved.level,saved.x*scaleX,saved.y+floorDelta,saved.vx,saved.vy,saved.age);
       body.id = saved.id;
       body.angle = data.version===1 ? clamp(normalizedAngle(saved.angle),-.28,.28) : normalizedAngle(saved.angle);
       body.angularVelocity = data.version===1 ? clamp(saved.angularVelocity,-1.2,1.2) : saved.angularVelocity;
       this.fitBounds(body);
-      if (saved.isSleeping) Sleeping.set(body.rigid,true);
+      if (saved.isSleeping && !resizedBodies) Sleeping.set(body.rigid,true);
       return body;
     });
     this.bodies = bodies;
     this.syncBodies();
     Object.assign(this,{score:data.score,revivesUsed:revivesUsed,bonusCoins:bonusCoins,phase:data.phase,currentLevel:data.currentLevel,nextLevel:data.nextLevel,
       aimX:clamp(data.aimX*scaleX,18,this.width-18),cooldown:data.cooldown,
-      dangerTime:floorDelta===0 ? data.dangerTime : 0,time:data.time,won:data.won,nextId:data.nextId,
+      dangerTime:floorDelta===0 && !resizedBodies ? data.dangerTime : 0,time:data.time,won:data.won,nextId:data.nextId,
       accumulator:0,paused:false});
     this.dangerProgress = Math.min(1,this.dangerTime/2);
     Engine.clear(this.engine);

@@ -553,6 +553,29 @@ test('a naturally tilted sleeping rabbit keeps its rotation and sleeping state a
   assert.equal(restored.angularVelocity,0);
 });
 
+test('restoring a resized sleeping stack wakes its bodies and restarts danger grace without losing score or coins', () => {
+  const first=new GameWorld({random:()=>0});
+  first.bodies.push(first.makeBody(0,120,90,0,0,4),first.makeBody(1,180,140,0,0,4));
+  first.score=6200;first.bonusCoins=2;first.revivesUsed=1;
+  const saved=first.snapshot();
+  saved.bodies[0].radius/=1.12;
+  saved.bodies.forEach(body=>{body.isSleeping=true;});
+  saved.dangerTime=1.9;
+  const restored=new GameWorld();
+  assert.equal(restored.restore(saved),true);
+  assert.ok(restored.bodies.every(body=>!body.isSleeping),'the changed body and its sleeping neighbours must all take part in collision solving');
+  assert.equal(restored.bodies[0].radius,LEVELS[0].radius);
+  assert.equal(restored.score,6200);assert.equal(restored.bonusCoins,2);assert.equal(restored.revivesUsed,1);assert.equal(restored.reviveCoins,4);
+  assert.equal(restored.phase,'playing');assert.equal(restored.dangerTime,0);assert.equal(restored.dangerProgress,0);
+  run(restored,.1);
+  assert.equal(restored.phase,'playing','the old near-expired overflow timer must not immediately end the enlarged game');
+  assert.equal(restored.score,6200);assert.equal(restored.reviveCoins,4);
+  const ended=new GameWorld();
+  assert.equal(ended.restore(Object.assign({},saved,{phase:'over'})),true);
+  assert.equal(ended.phase,'over','an already ended round must still offer its normal revive flow');
+  assert.equal(ended.canRevive,true);assert.equal(ended.reviveCoins,4);
+});
+
 function normalized(angle) {return Math.atan2(Math.sin(angle),Math.cos(angle));}
 
 test('all twelve selected photo rabbits have finite convex silhouette parts at a common scale', () => {
