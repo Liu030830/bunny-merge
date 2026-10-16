@@ -16,7 +16,7 @@ let unlocked = Number.isInteger(saved?.unlocked) && saved.unlocked >= 0 && saved
 let sound = saved?.sound === true;
 let started = false, paused = false, pointerId = null, audioContext;
 let width = 360, height = 530, lastFrame = 0, lastSave = 0, toastTimer;
-let dialogWasPaused = false, lastFocus, lastScore = -1, lastNext = -1;
+let dialogWasPaused = false, lastFocus, lastScore = -1, lastNext = -1, lastCoins = -1, lastProgress = -1, lastPhase;
 let newRecord = false, effects = [], pops = [];
 const mergePulses = new Map();
 const SPRITE_RADIUS = 100;
@@ -44,9 +44,14 @@ function setPause(value) {
   paused = value;
   world.paused = !started || value || $('game-dialog').open || document.hidden;
   $('pause-overlay').hidden = !value || !started || world.phase === 'over';
-  $('pause-button').querySelector('span').textContent = value ? '继续' : '暂停';
-  $('pause-button').setAttribute('aria-label', value ? '继续游戏' : '暂停游戏');
+  updatePauseButton();
   pointerId = null;
+}
+function updatePauseButton() {
+  const ended = world.phase === 'over';
+  const label = ended ? (world.canRevive ? '复活' : '结算') : paused ? '继续' : '暂停';
+  $('pause-button').querySelector('span').textContent = label;
+  $('pause-button').setAttribute('aria-label', ended ? (world.canRevive ? '查看复活选项' : '查看本局结果') : paused ? '继续游戏' : '暂停游戏');
 }
 function start() {
   started = true;
@@ -63,7 +68,7 @@ function freshGame() {
   closeDialog();
   world.reset(); effects = []; pops = []; newRecord = false;
   mergePulses.clear();
-  lastScore = lastNext = -1;
+  lastScore = lastNext = lastCoins = lastProgress = -1;
   start();
 }
 function updateStats() {
@@ -77,6 +82,20 @@ function updateStats() {
     drawTinyBunny($('next-canvas'), world.nextLevel);
     $('next-canvas').setAttribute('aria-label', '下一只：' + NAMES[world.nextLevel]);
     lastNext = world.nextLevel;
+  }
+  if (world.reviveCoins !== lastCoins) {
+    $('revive-coins').textContent = world.reviveCoins;
+    lastCoins = world.reviveCoins;
+    updatePauseButton();
+  }
+  const progress = 2000 - world.score % 2000;
+  if (progress !== lastProgress) {
+    $('coin-progress').textContent = `再得 ${progress} 分 +1枚`;
+    lastProgress = progress;
+  }
+  if (world.phase !== lastPhase) {
+    updatePauseButton();
+    lastPhase = world.phase;
   }
   const danger = world.dangerProgress > 0;
   $('field-status').textContent = danger ? '快满啦，找一样的兔兔合成！' : world.phase === 'over' ? '兔兔们已经挤满啦' : '今天也要软乎乎';
@@ -144,18 +163,34 @@ function merged(event) {
   if (!reducedMotion && event.bodyId !== undefined) mergePulses.set(event.bodyId, 0);
   updateStats();
   const isNew = unlock(event.level);
-  $('game-announcement').textContent = `合成${NAMES[event.level]}，获得${event.points}分。当前${world.score}分。`;
-  if (isNew) toast(`新朋友：${NAMES[event.level]} ♡`);
-  if(event.final) toast(`${NAMES[LAST_LEVEL]}团圆！奖励 ${event.points} 分 ♡`);
+  const earned = Math.floor(event.score / 2000) - Math.floor((event.score - event.points) / 2000) + (event.bonusCoins || 0);
+  const coinMessage = earned > 0 ? `获得 ${earned} 枚复活币` : '';
+  $('game-announcement').textContent = `${event.final ? '两只' + NAMES[event.level] + '一起消除' : '合成' + NAMES[event.level]}，获得${event.points}分。当前${world.score}分。${coinMessage}`;
+  if(event.final) toast(`${NAMES[LAST_LEVEL]}团圆！奖励 ${event.points} 分${coinMessage ? ' · ' + coinMessage : ' ♡'}`, 3200);
+  else if (coinMessage) toast(`${isNew ? '新朋友：' + NAMES[event.level] + ' · ' : ''}${coinMessage} ♡`, 3200);
+  else if (isNew) toast(`新朋友：${NAMES[event.level]} ♡`);
   tone(520 + event.level * 55,.13); tone(780 + event.level*60,.18,.075,.025);
   save();
 }
 function gameOver() {
   updateStats(); save();
   pointerId = null;
-  openDialog(`<canvas id="result-art" class="result-art" width="240" height="240" aria-hidden="true"></canvas><h2 id="dialog-title">兔兔们挤满啦</h2><p class="dialog-copy">每一次贴贴，都是一点点进步。</p><div class="result-score"><small>本局得分</small>${world.score}</div>${newRecord ? '<div class="record">✦ 新纪录！你的兔兔超争气</div>' : `<p class="dialog-copy">最高纪录 ${best}</p>`}<button id="again-button" class="primary-button">再来一局</button>`);
+  const canRevive = world.canRevive;
+  openDialog(`<canvas id="result-art" class="result-art" width="240" height="240" aria-hidden="true"></canvas><h2 id="dialog-title">兔兔们挤满啦</h2><p class="dialog-copy">${canRevive ? '花一枚复活币，移走最上面的一只兔兔。<br>得分保留，继续这一局。' : '每一次贴贴，都是一点点进步。<br>每局每满 2000 分，获得一枚复活币。'}</p><div class="result-score"><small>本局得分</small>${world.score}</div><p class="dialog-copy">剩余复活币 <strong>${world.reviveCoins}</strong> 枚</p>${newRecord ? '<div class="record">✦ 新纪录！你的兔兔超争气</div>' : `<p class="dialog-copy">最高纪录 ${best}</p>`}${canRevive ? '<button id="revive-button" class="primary-button">花1枚复活币，继续</button><button id="again-button" class="secondary-button">结束本局，重新开始</button>' : '<button id="again-button" class="primary-button">再来一局</button>'}`);
   drawTinyBunny($('result-art'),Math.max(1,Math.min(unlocked,LAST_LEVEL)));
   $('again-button').onclick = freshGame;
+  if (canRevive) $('revive-button').onclick = () => {
+    const removed = world.revive();
+    if (!removed) return;
+    dialogWasPaused = false;
+    closeDialog();
+    setPause(false);
+    updateStats();
+    toast(`移走了${NAMES[removed.level]}，继续贴贴 ♡`);
+    $('game-announcement').textContent = `使用一枚复活币，移走${NAMES[removed.level]}。得分${world.score}，剩余${world.reviveCoins}枚复活币。`;
+    save();
+    canvas.focus({preventScroll:true});
+  };
   tone(440,.16); tone(330,.22,.18);
 }
 function openDialog(html) {
@@ -199,10 +234,10 @@ $('game-dialog').addEventListener('click',event => {
 });
 $('start-button').onclick = () => { activateAudio(); start(); };
 $('sound-button').onclick = () => { sound = !sound; updateSound(); activateAudio(); if(sound) tone(680,.13); save(); };
-$('pause-button').onclick = () => { if(started && world.phase === 'playing') setPause(!paused); };
+$('pause-button').onclick = () => { if (!started) return; if (world.phase === 'over') gameOver(); else setPause(!paused); };
 $('resume-button').onclick = () => { activateAudio(); setPause(false); canvas.focus({preventScroll:true}); };
 $('help-button').onclick = () => {
-  openDialog(`<h2 id="dialog-title">一起养大兔兔</h2><p class="dialog-copy">不用着急，让小可爱慢慢团圆。</p><ol class="rules"><li><b>1</b><span>在花园里<bdi>拖动手指</bdi>瞄准，<bdi>松手</bdi>让兔兔落下。轻点也可以投放。</span></li><li><b>2</b><span>两只一样的兔兔碰到一起，就会合成下一只更大的兔兔。</span></li><li><b>3</b><span>兔兔堆过虚线一小会儿，花园就满了。两只${NAMES[LAST_LEVEL]}相碰会消除，送你额外分数。</span></li></ol><p class="dialog-copy">电脑：← → 瞄准，空格投放。<br>手机：浏览器菜单可“添加到主屏幕”。<br>进度和最高分保存在当前浏览器里。</p><button id="help-done" class="primary-button">知道啦，去贴贴</button>`);
+  openDialog(`<h2 id="dialog-title">一起养大兔兔</h2><p class="dialog-copy">不用着急，让小可爱慢慢团圆。</p><ol class="rules"><li><b>1</b><span>在花园里<bdi>拖动手指</bdi>瞄准，<bdi>松手</bdi>让兔兔落下。轻点也可以投放。</span></li><li><b>2</b><span>两只一样的兔兔碰到一起，就会合成下一只更大的兔兔。两只最终兔子${NAMES[LAST_LEVEL]}相碰会一起消除，奖励 500 分和 1 枚复活币。</span></li><li><b>3</b><span>每局累计得分，每满 2000 分获得 1 枚复活币，可与最终兔子的奖励叠加。使用只扣币、不扣分；新一局清零。</span></li><li><b>4</b><span>兔兔持续堆过虚线时游戏暂停，可以花 1 枚复活币消除最上面的一只，继续这局。</span></li></ol><p class="dialog-copy">电脑：← → 瞄准，空格投放。<br>手机：浏览器菜单可“添加到主屏幕”。<br>进度和最高分保存在当前浏览器里。</p><button id="help-done" class="primary-button">知道啦，去贴贴</button>`);
   $('help-done').onclick = closeDialog;
 };
 $('collection-button').onclick = () => {
@@ -218,7 +253,7 @@ $('collection-button').onclick = () => {
 };
 $('restart-button').onclick = () => {
   if(!started || (!world.bodies.length && !world.score)) { freshGame(); return; }
-  openDialog('<h2 id="dialog-title">重新开一局？</h2><p class="dialog-copy">本局进度会清空。<br>最高纪录和发现的兔兔会保留。</p><button id="confirm-restart" class="primary-button">重新开始</button><button id="cancel-restart" class="secondary-button">再陪兔兔玩一会儿</button>');
+  openDialog('<h2 id="dialog-title">重新开一局？</h2><p class="dialog-copy">本局进度和复活币会清空。<br>最高纪录和发现的兔兔会保留。</p><button id="confirm-restart" class="primary-button">重新开始</button><button id="cancel-restart" class="secondary-button">再陪兔兔玩一会儿</button>');
   $('confirm-restart').onclick=freshGame; $('cancel-restart').onclick=closeDialog;
 };
 function clampAim(x) {
@@ -373,9 +408,10 @@ function welcomeArt() {
   c.fillStyle='#e7bf71';c.font='22px serif';c.fillText('✦',393,80);c.fillText('✦',102,172);
 }
 resize();
-if(saved?.game && world.restore(saved.game) && world.phase==='playing'){
+if(saved?.game && world.restore(saved.game)){
   started=true; $('welcome').hidden=true; $('pause-button').disabled=false;
-  world.bodies.forEach(b=>unlock(b.level));setPause(true);
+  world.bodies.forEach(b=>unlock(b.level));
+  if (world.phase === 'over') gameOver(); else setPause(true);
 }else { world.reset();world.paused=true;$('pause-button').disabled=true; }
 $('best').textContent=best;
 function refreshArtwork(progress) {

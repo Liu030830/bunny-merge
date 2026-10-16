@@ -22,14 +22,14 @@ const css = await fs.readFile(path.join(source, 'style.css'), 'utf8');
 const guard = await fs.readFile(path.join(work, 'boot-guard.js'), 'utf8');
 const icon = 'data:image/svg+xml;base64,'+(await fs.readFile(path.join(source, 'icon.svg'))).toString('base64');
 let html = await fs.readFile(path.join(work, 'index.template.html'), 'utf8');
-html = html.replace('<link rel="stylesheet" href="./style.css">', '<style>'+css+'</style>')
-  .replace('<title>', '<meta name="bunny-build" content="2026-10-16-standalone-v2"><title>')
+html = html.replace('<link rel="stylesheet" href="./style.css">', () => '<style>'+css+'</style>')
+  .replace('<title>', '<meta name="bunny-build" content="2026-10-16-revive-v3"><title>')
   .replace(/\s*<link rel="preload" as="image"[^>]+>/g, '')
   .replaceAll('href="./icon.svg"', 'href="'+icon+'"')
-  .replace('<body>', '<body>\n<script>'+guard+'</script>')
+  .replace('<body>', () => '<body>\n<script>'+guard+'</script>')
   .replace('<span class="welcome-hint">', '<span id="load-status" class="welcome-hint">')
   .replace('<script type="module" src="./app.mjs"></script>',
-    '<script>window.__BUNNY_ASSET_DATA__='+JSON.stringify(data)+';</script>\n'+
+    () => '<script>window.__BUNNY_ASSET_DATA__='+JSON.stringify(data)+';</script>\n'+
     '<script>try{'+code.replace(/<\/script/gi,'<\\/script')+'}catch(error){window.__bunnyBootFailed(error);}</script>');
 await fs.writeFile(path.join(source, 'index.html'), html);
 

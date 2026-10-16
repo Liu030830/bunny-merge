@@ -42,6 +42,166 @@ test('matching rabbits merge into exactly one larger rabbit and add points', () 
   assert.equal(world.bodies[0].level, 1);
   assert.equal(world.score, LEVELS[1].points);
   assert.equal(events.length, 1);
+  assert.equal(events[0].bonusCoins,0);
+});
+
+test('each crossed 2000-point milestone grants a revive coin, including multiple milestones in one merge', () => {
+  const world = new GameWorld();
+  world.score = 1996;
+  assert.equal(world.reviveCoins,0);
+  world.bodies.push(world.makeBody(0,170,300),world.makeBody(0,180,300));
+  world.step(1/120);
+  assert.equal(world.score,2000);
+  assert.equal(world.reviveCoins,1);
+  assert.equal(world.canRevive,false,'coins cannot be spent during active play');
+  world.phase='over';
+  assert.ok(world.revive());
+  assert.equal(world.score,2000,'spending a coin must never deduct points');
+  assert.equal(world.reviveCoins,0);
+  const top=LEVELS.length-2;
+  world.bodies.push(world.makeBody(top,140,300),world.makeBody(top,220,300));
+  world.step(1/120);
+  assert.equal(world.score,6096);
+  assert.equal(world.reviveCoins,2,'newly crossed milestones remain available after an earlier revive');
+  world.score=11999;
+  assert.equal(world.reviveCoins,4);
+  world.score=12000;
+  assert.equal(world.reviveCoins,5);
+});
+
+test('reviving refuses active rounds, empty boards and rounds without coins without changing state', () => {
+  const world = new GameWorld({random:()=>0});
+  world.drop(180);
+  const cases=[{phase:'over',score:1999},{phase:'playing',score:2000}];
+  for(const item of cases) {
+    world.phase=item.phase; world.score=item.score;
+    const before=world.snapshot();
+    assert.equal(world.canRevive,false);
+    assert.equal(world.revive(),null);
+    assert.deepEqual(world.snapshot(),before);
+  }
+  world.bodies=[];world.phase='over';world.score=4000;
+  const before=world.snapshot();
+  assert.equal(world.canRevive,false);
+  assert.equal(world.revive(),null);
+  assert.deepEqual(world.snapshot(),before);
+});
+
+test('reviving removes the actual topmost outline and preserves score and all remaining body state', () => {
+  const world = new GameWorld({random:()=>0});
+  const small=world.makeBody(0,85,110);
+  const tall=world.makeBody(10,220,150);
+  tall.angle=.35;
+  const other=world.makeBody(2,180,400,27,-8,7);
+  world.bodies.push(small,tall,other);world.syncBodies();
+  assert.ok(tall.y>small.y,'the removed entity must not simply have the highest centre');
+  assert.ok(world.getBounds(tall).min.y<world.getBounds(small).min.y);
+  world.score=6000;world.phase='over';world.paused=true;
+  world.dangerTime=2;world.dangerProgress=1;world.cooldown=.1;world.accumulator=.02;
+  const otherState=world.snapshot().bodies.filter(body=>body.id!==tall.id);
+  const current=world.currentLevel,next=world.nextLevel;
+  assert.equal(world.canRevive,true,'the game-over dialog pause must not block spending a coin');
+  assert.equal(world.revive(),tall);
+  assert.equal(world.score,6000);
+  assert.equal(world.revivesUsed,1);
+  assert.equal(world.reviveCoins,2);
+  assert.equal(world.phase,'playing');
+  assert.equal(world.paused,true,'dialog controls remain responsible for resuming play');
+  assert.equal(world.dangerTime,0);assert.equal(world.dangerProgress,0);
+  assert.ok(world.cooldown>=.42);assert.equal(world.accumulator,0);
+  assert.equal(world.canDrop,false);
+  assert.equal(world.currentLevel,current);assert.equal(world.nextLevel,next);
+  assert.deepEqual(world.snapshot().bodies,otherState);
+  assert.equal(world.known.has(tall),false);
+  assert.equal(world.byRigidId.has(tall.rigid.id),false);
+  assert.equal(world.engine.world.bodies.includes(tall.rigid),false);
+  assert.equal(world.engine.pairs.list.length,0);
+  const before=world.snapshot();
+  assert.equal(world.revive(),null,'a double click cannot consume another coin before game over recurs');
+  assert.deepEqual(world.snapshot(),before);
+});
+
+test('equally high outlines choose the lowest stable ID regardless of body array order', () => {
+  const world = new GameWorld();
+  const first=world.makeBody(0,80,100),second=world.makeBody(0,260,100);
+  assert.equal(world.getBounds(first).min.y,world.getBounds(second).min.y);
+  world.bodies.push(second,first);world.score=4000;world.phase='over';
+  assert.equal(world.revive(),first);
+  world.phase='over';
+  assert.equal(world.revive(),second);
+  assert.equal(world.reviveCoins,0);
+  assert.equal(world.revivesUsed,2);
+  assert.equal(world.score,4000);
+  assert.equal(world.canRevive,false);
+});
+
+test('v4 saves preserve spent coins through repeated restores, including legitimate empty rounds', () => {
+  const first = new GameWorld({random:()=>0});
+  first.drop(180);first.score=6200;first.phase='over';
+  assert.ok(first.revive());
+  assert.equal(first.bodies.length,0);
+  let data=first.snapshot();
+  assert.equal(data.version,4);assert.equal(data.revivesUsed,1);assert.equal(data.bonusCoins,0);
+  for(let i=0;i<3;i++) {
+    const restored=new GameWorld();
+    assert.equal(restored.restore(JSON.parse(JSON.stringify(data))),true);
+    assert.equal(restored.score,6200);
+    assert.equal(restored.revivesUsed,1);
+    assert.equal(restored.reviveCoins,2,'refreshing must not refund a consumed coin');
+    assert.equal(restored.bodies.length,0);
+    data=restored.snapshot();
+  }
+});
+
+test('v1 and v2 saves receive milestone coins with no prior revive usage', () => {
+  const first = new GameWorld({random:()=>0});first.drop(180);first.score=4500;
+  for(const version of [1,2]) {
+    const data=first.snapshot();data.version=version;delete data.revivesUsed;
+    const restored=new GameWorld();
+    assert.equal(restored.restore(data),true);
+    assert.equal(restored.revivesUsed,0);
+    assert.equal(restored.reviveCoins,2);
+    assert.equal(restored.snapshot().version,4);
+  }
+});
+
+test('v3 and v4 revive usage and sleeping flags are strictly validated before any live state changes', () => {
+  const world = new GameWorld({random:()=>0});world.drop(180);world.score=6000;
+  const before=world.snapshot();
+  const invalid=[-1,.5,NaN,Infinity,'1',null,undefined,4].map(value=>Object.assign({},before,{revivesUsed:value}));
+  for(const flag of [undefined,'true',1]) {
+    const body=Object.assign({},before.bodies[0],{isSleeping:flag});
+    invalid.push(Object.assign({},before,{bodies:[body]}));
+  }
+  for(const version of [3,4]) for(const item of invalid) {
+    const data=Object.assign({},item,{version:version});
+    assert.equal(world.restore(data),false);
+    assert.deepEqual(world.snapshot(),before,'rejected save data must not partially replace a game');
+  }
+});
+
+test('starting a fresh round clears both milestone coins and previous revive spending', () => {
+  const world = new GameWorld({random:()=>0});world.drop(180);world.score=6000;world.phase='over';
+  assert.ok(world.revive());
+  assert.equal(world.reviveCoins,2);
+  world.reset();
+  assert.equal(world.score,0);assert.equal(world.revivesUsed,0);assert.equal(world.bonusCoins,0);assert.equal(world.reviveCoins,0);
+  assert.equal(world.canRevive,false);assert.equal(world.phase,'playing');
+});
+
+test('a real overflow can spend a milestone coin and resume physics after the input cooldown', () => {
+  let endings=0;
+  const world=new GameWorld({height:400,onGameOver:()=>endings++});
+  world.bodies.push(world.makeBody(9,180,300),world.makeBody(8,180,114),world.makeBody(0,180,10));
+  world.score=2000;
+  run(world,4.5);
+  assert.equal(world.phase,'over');assert.equal(endings,1);assert.equal(world.canRevive,true);
+  const removed=world.revive();
+  assert.ok(removed);assert.equal(world.reviveCoins,0);assert.equal(world.canDrop,false);
+  run(world,.5);
+  assert.equal(world.phase,'playing');assert.equal(world.canDrop,true);
+  assert.equal(world.score,2000);assert.equal(endings,1);
+  assert.ok(world.bodies.every(body=>body.id!==removed.id));
 });
 
 test('pause freezes cooldown and motion', () => {
@@ -85,7 +245,7 @@ test('one rabbit cannot merge twice during a single simulation tick', () => {
   assert.equal(new Set(world.bodies.map(body => body.id)).size, 2);
 });
 
-test('the largest pair clears and grants its bonus, with win announced once', () => {
+test('each final-tier pair clears for exactly 500 points and one bonus coin without a creation announcement', () => {
   const events = [];
   let wins = 0;
   const world = new GameWorld({ onMerge: event => events.push(event), onWin: () => wins++ });
@@ -93,12 +253,89 @@ test('the largest pair clears and grants its bonus, with win announced once', ()
   world.bodies.push(world.makeBody(top, 140, 300), world.makeBody(top, 220, 300));
   world.step(1 / 120);
   assert.equal(world.bodies.length, 0);
-  assert.equal(world.score, LEVELS[top].points*2);
+  assert.equal(world.score,500);
+  assert.equal(world.bonusCoins,1);assert.equal(world.reviveCoins,1);
+  assert.equal(events[0].points,500);assert.equal(events[0].bonusCoins,1);
   assert.equal(events[0].final, true);
-  assert.equal(wins, 1);
+  assert.equal(wins,0,'clearing the final pair must not replace its reward notification with a creation announcement');
   world.bodies.push(world.makeBody(top, 140, 300), world.makeBody(top, 220, 300));
   world.step(1 / 120);
-  assert.equal(wins, 1);
+  assert.equal(world.score,1000);assert.equal(world.bonusCoins,2);assert.equal(world.reviveCoins,2);
+  assert.equal(events.length,2);assert.equal(wins,0);
+});
+
+test('creating the final-tier bunny announces a win once but only clearing it earns a bonus coin', () => {
+  let wins=0;const events=[];
+  const world=new GameWorld({onWin:()=>wins++,onMerge:event=>events.push(event)});
+  const top=LEVELS.length-1;
+  world.bodies.push(world.makeBody(top-1,140,300),world.makeBody(top-1,220,300));
+  world.step(1/120);
+  assert.equal(wins,1);assert.equal(world.won,true);
+  assert.equal(world.bodies[0].level,top);
+  assert.equal(events[0].final,false);assert.equal(events[0].bonusCoins,0);
+  assert.equal(world.bonusCoins,0);
+  world.bodies.push(world.makeBody(top,world.bodies[0].x,world.bodies[0].y));
+  world.step(1/120);
+  assert.equal(wins,1);assert.equal(world.bodies.length,0);assert.equal(world.bonusCoins,1);
+  assert.equal(events[1].final,true);assert.equal(events[1].bonusCoins,1);
+});
+
+test('a final pair crossing 2000 points awards both its bonus coin and the score milestone coin atomically', () => {
+  let saved;
+  const world=new GameWorld({onMerge:()=>{saved=world.snapshot();}}),top=LEVELS.length-1;
+  world.score=1500;
+  world.bodies.push(world.makeBody(top,140,300),world.makeBody(top,220,300));
+  world.step(1/120);
+  assert.equal(world.score,2000);assert.equal(world.bonusCoins,1);assert.equal(world.reviveCoins,2);
+  assert.equal(saved.score,2000);assert.equal(saved.bonusCoins,1);assert.equal(saved.bodies.length,0);
+});
+
+test('four final pairs give four bonus coins plus one 2000-point milestone coin', () => {
+  const world=new GameWorld(),top=LEVELS.length-1;
+  for(let pair=0;pair<4;pair++) {
+    world.bodies.push(world.makeBody(top,140,300),world.makeBody(top,220,300));
+    world.step(1/120);
+    assert.equal(world.bodies.length,0);
+  }
+  assert.equal(world.score,2000);assert.equal(world.bonusCoins,4);assert.equal(world.reviveCoins,5);
+});
+
+test('multiple compound contacts in one frame grant exactly one final bonus for each consumed pair', () => {
+  const events=[],world=new GameWorld({onMerge:event=>events.push(event)}),top=LEVELS.length-1;
+  for(const x of [100,140,220,260])world.bodies.push(world.makeBody(top,x,300));
+  world.step(1/120);
+  assert.equal(world.bodies.length,0);assert.equal(events.length,2);
+  assert.equal(world.score,1000);assert.equal(world.bonusCoins,2);assert.equal(world.reviveCoins,2);
+  assert.ok(events.every(event=>event.final&&event.points===500&&event.bonusCoins===1));
+});
+
+test('v4 restores spent bonus coins without refunding them and v3 migrates with no bonus backfill', () => {
+  const world=new GameWorld({random:()=>0}),top=LEVELS.length-1;
+  world.bodies.push(world.makeBody(top,140,300),world.makeBody(top,220,300));world.step(1/120);
+  world.drop(180);world.phase='over';assert.ok(world.revive());
+  assert.equal(world.score,500);assert.equal(world.bonusCoins,1);assert.equal(world.revivesUsed,1);assert.equal(world.reviveCoins,0);
+  let saved=world.snapshot();
+  for(let i=0;i<3;i++) {
+    const restored=new GameWorld();assert.equal(restored.restore(JSON.parse(JSON.stringify(saved))),true);
+    assert.equal(restored.score,500);assert.equal(restored.bonusCoins,1);assert.equal(restored.revivesUsed,1);assert.equal(restored.reviveCoins,0);
+    saved=restored.snapshot();
+  }
+  const legacy=Object.assign({},saved,{version:3,score:6200,revivesUsed:1});delete legacy.bonusCoins;
+  const restored=new GameWorld();assert.equal(restored.restore(legacy),true);
+  assert.equal(restored.score,6200);assert.equal(restored.revivesUsed,1);assert.equal(restored.bonusCoins,0);assert.equal(restored.reviveCoins,2);
+  restored.reset();assert.equal(restored.bonusCoins,0);assert.equal(restored.revivesUsed,0);assert.equal(restored.reviveCoins,0);
+  world.reset();assert.equal(world.score,0);assert.equal(world.bonusCoins,0);assert.equal(world.revivesUsed,0);assert.equal(world.reviveCoins,0);
+});
+
+test('v4 rejects malformed bonus counts or spending above total earned coins atomically', () => {
+  const world=new GameWorld(),top=LEVELS.length-1;
+  world.bodies.push(world.makeBody(top,140,300),world.makeBody(top,220,300));world.step(1/120);
+  const before=world.snapshot();
+  const invalid=[-1,.5,NaN,Infinity,'1',null,undefined,2].map(value=>Object.assign({},before,{bonusCoins:value}));
+  invalid.push(Object.assign({},before,{revivesUsed:2}));
+  for(const data of invalid) {
+    assert.equal(world.restore(data),false);assert.deepEqual(world.snapshot(),before);
+  }
 });
 
 test('stack above danger line must survive the grace period and stay overflowing to end game', () => {

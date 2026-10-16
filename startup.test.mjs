@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { GameWorld, LEVELS } from './physics.mjs';
 
 const pagePath = new URL('./index.html', import.meta.url);
 
@@ -18,7 +19,7 @@ function readPage() {
   return { html, scripts: scripts.map(([, , source]) => source) };
 }
 
-function createBrowser(html, { legacy = false } = {}) {
+function createBrowser(html, { legacy = false, saved } = {}) {
   let now = 0;
   let nextTimer = 1;
   let reloads = 0;
@@ -29,6 +30,7 @@ function createBrowser(html, { legacy = false } = {}) {
   const elements = new Map();
   const windowListeners = new Map();
   const storage = new Map();
+  if (saved !== undefined) storage.set('bunny-garden-v1', JSON.stringify(saved));
   const errors = [];
 
   class Element {
@@ -266,6 +268,7 @@ function createBrowser(html, { legacy = false } = {}) {
 
   return {
     context, document, elements, images, canvases, errors,
+    readSaved() { return JSON.parse(storage.get('bunny-garden-v1') || 'null'); },
     get reloads() { return reloads; },
     evaluate: source => vm.runInContext(source, context, { timeout: 5000 }),
     photoDraws: canvas => canvas.draws.filter(args => args[0] instanceof FakeImage).length,
@@ -293,9 +296,9 @@ function createBrowser(html, { legacy = false } = {}) {
   };
 }
 
-function boot({ legacy = false, watchdogOnly = false } = {}) {
+function boot({ legacy = false, watchdogOnly = false, saved } = {}) {
   const { html, scripts } = readPage();
-  const browser = createBrowser(html, { legacy });
+  const browser = createBrowser(html, { legacy, saved });
   for (const source of scripts) {
     browser.evaluate(source);
     if (watchdogOnly && typeof browser.context.__bunnyBootFailed === 'function') return browser;
@@ -446,4 +449,152 @@ test('photographs decoded after the 12-second deadline still refresh all twelve 
   assert.equal(browser.elements.get('load-status').textContent, '拖动瞄准 · 松手落下',
     'successful background progress must clear the stale slow-load status');
   assertReady(browser);
+});
+
+function gameFixture({ score = 2000, revivesUsed = 0, phase = 'over', bodies } = {}) {
+  const world = new GameWorld({ width: 360, height: 360 * 450 / 330 - 12, random: () => 0 });
+  const placements = bodies || [[1, 180, 260], [0, 165, 80], [8, 260, 340]];
+  world.bodies = placements.map(([level, x, y]) => world.makeBody(level, x, y, 0, 0, 5));
+  world.score = score;
+  world.revivesUsed = revivesUsed;
+  world.phase = phase;
+  world.dangerTime = phase === 'over' ? 2 : 0;
+  const highest = [...world.bodies].sort((a, b) => world.getBounds(a).min.y - world.getBounds(b).min.y)[0];
+  return {
+    saved: { best: score, unlocked: Math.max(0, ...placements.map(([level]) => level)), sound: false, game: world.snapshot() },
+    highestId: highest?.id,
+  };
+}
+
+function assertCoinUi(browser, coins, remaining = 2000) {
+  assert.deepEqual(browser.errors, [], 'the saved game must start without an exception');
+  const counter = browser.elements.get('revive-coins');
+  const progress = browser.elements.get('coin-progress');
+  assert.ok(counter, 'the coin counter must be rendered');
+  assert.ok(progress, 'the next-coin progress must be rendered');
+  assert.equal(counter.textContent, String(coins));
+  assert.equal(progress.textContent, `再得 ${remaining} 分 +1枚`);
+}
+
+test('a restored overflow game can spend one coin to remove only the highest rabbit without losing points', () => {
+  const fixture = gameFixture();
+  const browser = boot({ saved: fixture.saved });
+  assertCoinUi(browser, 1);
+  assert.equal(browser.elements.get('game-dialog').open, true, 'an ended save must show the recovery dialog');
+  const reviveButton = browser.elements.get('revive-button');
+  assert.ok(reviveButton, 'a player with a coin must be offered revival');
+  reviveButton.click();
+  const saved = browser.readSaved();
+  assert.equal(saved.game.score, 2000, 'revival must not spend score');
+  assert.equal(browser.elements.get('score').textContent, '2000');
+  assert.equal(saved.game.revivesUsed, 1, 'coin usage must be saved immediately');
+  assert.equal(saved.game.phase, 'playing');
+  assert.deepEqual(saved.game.bodies.map(body => body.id), fixture.saved.game.bodies.filter(body => body.id !== fixture.highestId).map(body => body.id));
+  assert.equal(browser.elements.get('game-dialog').open, false);
+  assertCoinUi(browser, 0);
+  browser.frame(1);
+  browser.frame(18);
+  assert.equal(browser.elements.get('pause-overlay').hidden, true, 'revival must actually resume gameplay');
+
+  const refreshed = boot({ saved });
+  assertCoinUi(refreshed, 0);
+  assert.equal(refreshed.readSaved().game.revivesUsed, 1, 'refresh must not refund the spent coin');
+});
+
+test('an overflow game with no available coins does not offer revival', () => {
+  for (const options of [{ score: 1999 }, { score: 2000, revivesUsed: 1 }]) {
+    const fixture = gameFixture(options);
+    const browser = boot({ saved: fixture.saved });
+    assertCoinUi(browser, 0, 2000 - options.score % 2000);
+    assert.equal(browser.elements.get('game-dialog').open, true);
+    assert.equal(browser.elements.get('revive-button'), undefined, 'an unearned or already spent coin cannot be used');
+    assert.ok(browser.elements.get('again-button'), 'starting a new game must remain available');
+  }
+});
+
+test('closing the overflow dialog leaves a recovery control that reopens it', () => {
+  const browser = boot({ saved: gameFixture().saved });
+  browser.elements.get('close-dialog').click();
+  assert.equal(browser.elements.get('game-dialog').open, false);
+  const button = browser.elements.get('pause-button');
+  assert.equal(button.disabled, false);
+  assert.equal(button.querySelector('span').textContent, '复活');
+  button.click();
+  assert.equal(browser.elements.get('game-dialog').open, true);
+  assert.ok(browser.elements.get('revive-button'));
+  assertCoinUi(browser, 1);
+});
+
+test('starting another round clears its coins and usage while preserving the high score', () => {
+  const browser = boot({ saved: gameFixture({ score: 4000, revivesUsed: 1 }).saved });
+  assertCoinUi(browser, 1);
+  browser.elements.get('again-button').click();
+  const saved = browser.readSaved();
+  assert.equal(saved.game.phase, 'playing');
+  assert.equal(saved.game.score, 0);
+  assert.equal(saved.game.revivesUsed, 0);
+  assert.equal(saved.game.bodies.length, 0);
+  assert.equal(saved.best, 4000);
+  assert.equal(browser.elements.get('score').textContent, '0');
+  assertCoinUi(browser, 0);
+});
+
+test('refreshing an ended round preserves its rabbits, score and available revival coin', () => {
+  const fixture = gameFixture();
+  const first = boot({ saved: fixture.saved });
+  const saved = first.readSaved();
+  assert.equal(saved.game.phase, 'over', 'startup must not replace an ended save with a new round');
+  assert.equal(saved.game.score, fixture.saved.game.score);
+  assert.deepEqual(saved.game.bodies.map(body => body.id), fixture.saved.game.bodies.map(body => body.id));
+  const refreshed = boot({ saved });
+  assertCoinUi(refreshed, 1);
+  assert.equal(refreshed.elements.get('game-dialog').open, true);
+  assert.ok(refreshed.elements.get('revive-button'));
+  assert.equal(refreshed.readSaved().game.revivesUsed, 0);
+});
+
+test('a real merge crossing 2000 points immediately awards one coin and updates its progress', () => {
+  const fixture = gameFixture({ score: 1998, phase: 'playing', bodies: [[0, 170, 300], [0, 185, 300]] });
+  const browser = boot({ saved: fixture.saved });
+  assertCoinUi(browser, 0, 2);
+  browser.elements.get('resume-button').click();
+  browser.frame(1);
+  browser.frame(18);
+  const saved = browser.readSaved();
+  assert.equal(saved.game.score, 2002, 'the two real level-zero bodies must merge for four points');
+  assert.equal(saved.game.revivesUsed, 0);
+  assert.equal(saved.game.bodies.length, 1);
+  assert.equal(browser.elements.get('score').textContent, '2002');
+  assertCoinUi(browser, 1, 1998);
+});
+
+test('the final rabbit pair clears for 500 points and a bonus coin, including the normal 2000-point reward', () => {
+  for (const initialScore of [0, 1750]) {
+    const last = LEVELS.length - 1;
+    const fixture = gameFixture({ score: initialScore, phase: 'playing', bodies: [[last, 120, 300], [last, 240, 300]] });
+    const browser = boot({ saved: fixture.saved });
+    assertCoinUi(browser, 0, 2000 - initialScore);
+    browser.elements.get('resume-button').click();
+    browser.frame(1);
+    browser.frame(18);
+
+    const saved = browser.readSaved();
+    const finalScore = initialScore + 500;
+    const coins = 1 + Math.floor(finalScore / 2000);
+    assert.equal(saved.game.score, finalScore, 'clearing the largest pair must award exactly 500 points');
+    assert.equal(saved.game.bodies.length, 0, 'both largest rabbits must be removed');
+    assert.equal(saved.game.bonusCoins, 1, 'the extra coin must be saved separately from score milestones');
+    assert.equal(saved.game.revivesUsed, 0);
+    assert.equal(saved.game.phase, 'playing');
+    assert.equal(browser.elements.get('score').textContent, String(finalScore));
+    assertCoinUi(browser, coins, 2000 - finalScore % 2000);
+    const toast = browser.elements.get('toast').textContent;
+    assert.match(toast, /奖励 500 分/, 'a win announcement must not overwrite the clearing reward');
+    assert.ok(toast.includes(`获得 ${coins} 枚复活币`), 'the reward message must include both bonus and milestone coins');
+    assert.ok(browser.elements.get('game-announcement').textContent.includes(`获得 ${coins} 枚复活币`), 'the accessible announcement must include the extra coin');
+
+    const refreshed = boot({ saved });
+    assertCoinUi(refreshed, coins, 2000 - finalScore % 2000);
+    assert.equal(refreshed.readSaved().game.bonusCoins, 1, 'refresh must preserve the extra final-pair coin');
+  }
 });

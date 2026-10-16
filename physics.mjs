@@ -38,6 +38,8 @@ export class GameWorld {
     this.walls = [];
     this.buildWalls();
     this.score = 0;
+    this.revivesUsed = 0;
+    this.bonusCoins = 0;
     this.phase = 'playing';
     this.paused = false;
     this.aimX = this.width/2;
@@ -65,6 +67,33 @@ export class GameWorld {
 
   get canDrop() {
     return this.phase==='playing' && !this.paused && this.cooldown<=1e-8 && this.bodies.length<100;
+  }
+
+  get reviveCoins() {
+    return Math.floor(this.score/2000)+this.bonusCoins-this.revivesUsed;
+  }
+
+  get canRevive() {
+    return this.phase==='over' && this.reviveCoins>0 && this.bodies.length>0;
+  }
+
+  revive() {
+    if (!this.canRevive) return null;
+    let highest=this.bodies[0],highestY=this.getBounds(highest).min.y;
+    for (let i=1;i<this.bodies.length;i++) {
+      const body=this.bodies[i],top=this.getBounds(body).min.y;
+      if (top<highestY || (top===highestY && body.id<highest.id)) {
+        highest=body;highestY=top;
+      }
+    }
+    this.bodies=this.bodies.filter(body=>body!==highest);
+    this.syncBodies();
+    Engine.clear(this.engine);
+    this.revivesUsed++;
+    this.phase='playing';
+    this.dangerTime=this.dangerProgress=this.accumulator=0;
+    this.cooldown=Math.max(this.cooldown,DROP_DELAY);
+    return highest;
   }
 
   makeBody(level, x, y, vx=0, vy=0, age=0) {
@@ -170,22 +199,26 @@ export class GameWorld {
   }
 
   snapshot() {
-    return {version:2, width:this.width,height:this.height,
+    return {version:4, width:this.width,height:this.height,
       bodies:this.bodies.map(body=>({id:body.id,level:body.level,radius:body.radius,age:body.age,
         x:body.x,y:body.y,vx:body.vx,vy:body.vy,angle:normalizedAngle(body.angle),
         angularVelocity:body.angularVelocity,isSleeping:body.isSleeping})),
-      score:this.score,phase:this.phase,currentLevel:this.currentLevel,nextLevel:this.nextLevel,aimX:this.aimX,
+      score:this.score,revivesUsed:this.revivesUsed,bonusCoins:this.bonusCoins,phase:this.phase,currentLevel:this.currentLevel,nextLevel:this.nextLevel,aimX:this.aimX,
       cooldown:this.cooldown,dangerTime:this.dangerTime,time:this.time,won:this.won,nextId:this.nextId};
   }
 
   restore(data) {
-    if (!data || ![1,2].includes(data.version) || !Array.isArray(data.bodies) || data.bodies.length>100) return false;
+    if (!data || ![1,2,3,4].includes(data.version) || !Array.isArray(data.bodies) || data.bodies.length>100) return false;
     if (!finiteIn(data.width,240,1200) || !finiteIn(data.height,280,1800)
       || !integerIn(data.score,0,1e9) || !['playing','over'].includes(data.phase)
       || !integerIn(data.currentLevel,0,3) || !integerIn(data.nextLevel,0,3)
       || !finiteIn(data.aimX,0,data.width) || !finiteIn(data.cooldown,0,DROP_DELAY)
       || !finiteIn(data.dangerTime,0,2.1) || !finiteIn(data.time,0,1e7)
       || typeof data.won!=='boolean' || !integerIn(data.nextId,1,1e9)) return false;
+    const bonusCoins=data.version===4 ? data.bonusCoins : 0;
+    if (!integerIn(bonusCoins,0,Math.floor(data.score/500))) return false;
+    const revivesUsed=data.version>=3 ? data.revivesUsed : 0;
+    if (!integerIn(revivesUsed,0,Math.floor(data.score/2000)+bonusCoins)) return false;
     const ids = new Set();
     for (const body of data.bodies) {
       if (!body || !integerIn(body.id,1,data.nextId-1) || ids.has(body.id)
@@ -194,7 +227,7 @@ export class GameWorld {
         || !finiteIn(body.vx,-2000,2000) || !finiteIn(body.vy,-2000,2000)
         || !finiteIn(body.age,0,1e7) || !finiteIn(body.angle,-1e9,1e9)
         || !finiteIn(body.angularVelocity,-200,200)
-        || (data.version===2 && typeof body.isSleeping!=='boolean')) return false;
+        || (data.version>=2 && typeof body.isSleeping!=='boolean')) return false;
       ids.add(body.id);
     }
     // Validation is atomic, and old circular saves migrate to the real rabbit silhouettes.
@@ -210,7 +243,7 @@ export class GameWorld {
     });
     this.bodies = bodies;
     this.syncBodies();
-    Object.assign(this,{score:data.score,phase:data.phase,currentLevel:data.currentLevel,nextLevel:data.nextLevel,
+    Object.assign(this,{score:data.score,revivesUsed:revivesUsed,bonusCoins:bonusCoins,phase:data.phase,currentLevel:data.currentLevel,nextLevel:data.nextLevel,
       aimX:clamp(data.aimX*scaleX,18,this.width-18),cooldown:data.cooldown,
       dangerTime:floorDelta===0 ? data.dangerTime : 0,time:data.time,won:data.won,nextId:data.nextId,
       accumulator:0,paused:false});
@@ -262,9 +295,10 @@ export class GameWorld {
       if (!a || !b || a===b || used.has(a) || used.has(b) || a.level!==b.level) continue;
       used.add(a); used.add(b);
       const final = a.level===LEVELS.length-1, level = final ? a.level : a.level+1;
-      const points = final ? LEVELS[level].points*2 : LEVELS[level].points;
+      const points = final ? 500 : LEVELS[level].points;
       const x = (a.x+b.x)/2, y = (a.y+b.y)/2;
       this.score += points;
+      if (final) this.bonusCoins++;
       let bodyId;
       if (!final) {
         // A bounded upward kick makes each merge pop without amplifying a chain reaction.
@@ -274,8 +308,8 @@ export class GameWorld {
         added.push(merged);
         bodyId = merged.id;
       }
-      events.push({x,y,level,points,final,score:this.score,bodyId});
-      if (level===LEVELS.length-1 && !this.won) {this.won=true; win=true;}
+      events.push({x,y,level,points,final,score:this.score,bodyId,bonusCoins:final?1:0});
+      if (!final && level===LEVELS.length-1 && !this.won) {this.won=true; win=true;}
     }
     if (used.size) {
       this.bodies = this.bodies.filter(body=>!used.has(body)).concat(added);
