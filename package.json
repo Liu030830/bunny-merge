@@ -1,0 +1,8 @@
+{
+  "name":"bunny-merge",
+  "version":"1.0.1",
+  "private":true,
+  "type":"module",
+  "scripts":{"build":"node build.mjs","test":"node --test physics.test.mjs startup.test.mjs"},
+  "devDependencies":{"acorn":"8.19.0","esbuild":"0.28.2"}
+}

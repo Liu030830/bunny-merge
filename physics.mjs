@@ -1,7 +1,7 @@
 import Matter from './vendor/matter.mjs';
 import { RABBIT_SHAPES, getRabbitShape } from './rabbit-shapes.mjs';
 
-const { Body, Composite, Engine, Sleeping } = Matter;
+const Body = Matter.Body, Composite = Matter.Composite, Engine = Matter.Engine, Sleeping = Matter.Sleeping;
 const RADII = [18,23,29,36,43,51,60,70,81,93,106,120];
 const COLORS = ['#fff6e7','#d7aa7a','#c8cbd0','#e5b48e','#fffdf2','#c3b6a6','#fff9ee','#f3eadb','#ffffff','#d8bb8d','#c8c1d1','#fff9f0'];
 export const LEVELS = Object.freeze(RABBIT_SHAPES.map((shape, level) => Object.freeze({
@@ -17,8 +17,13 @@ const normalizedAngle = angle => Math.atan2(Math.sin(angle), Math.cos(angle));
 const BODY_OPTIONS = {friction:.55, frictionStatic:.85, frictionAir:.025, restitution:.12, density:.001, slop:.035, sleepThreshold:45};
 
 export class GameWorld {
-  constructor({width=360, height=530, onMerge, onGameOver, onWin, random=Math.random}={}) {
-    Object.assign(this, {width,height,onMerge,onGameOver,onWin,random});
+  constructor(options={}) {
+    Object.assign(this, {
+      width:options.width===undefined ? 360 : options.width,
+      height:options.height===undefined ? 530 : options.height,
+      onMerge:options.onMerge, onGameOver:options.onGameOver, onWin:options.onWin,
+      random:options.random===undefined ? Math.random : options.random,
+    });
     this.dangerY = 115;
     this.reset();
   }

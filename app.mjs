@@ -1,5 +1,5 @@
 import { GameWorld, LEVELS } from './physics.mjs';
-import { assetLoaded, drawBunny, drawTinyBunny } from './bunny-models.mjs';
+import { loadRabbitAssets, drawBunny, drawTinyBunny } from './bunny-models.mjs';
 import { getRabbitShape } from './rabbit-shapes.mjs';
 
 const $ = id => document.getElementById(id);
@@ -8,7 +8,7 @@ const LAST_LEVEL = LEVELS.length - 1;
 const KEY = 'bunny-garden-v1';
 const canvas = $('game-canvas');
 const ctx = canvas.getContext('2d');
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 let saved;
 try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { saved = null; }
 let best = Number.isInteger(saved?.best) && saved.best >= 0 && saved.best <= 1e9 ? saved.best : 0;
@@ -20,10 +20,10 @@ let dialogWasPaused = false, lastFocus, lastScore = -1, lastNext = -1;
 let newRecord = false, effects = [], pops = [];
 const mergePulses = new Map();
 const SPRITE_RADIUS = 100;
-const spriteHalfSize = Math.ceil(SPRITE_RADIUS * Math.max(...LEVELS.flatMap((_, level) => {
+const spriteHalfSize = Math.ceil(SPRITE_RADIUS * Math.max(...LEVELS.reduce((values, _, level) => {
   const bounds = getRabbitShape(level).bounds;
-  return [Math.abs(bounds.minX), Math.abs(bounds.minY), Math.abs(bounds.maxX), Math.abs(bounds.maxY)];
-})) + 4);
+  return values.concat([Math.abs(bounds.minX), Math.abs(bounds.minY), Math.abs(bounds.maxX), Math.abs(bounds.maxY)]);
+}, [])) + 4);
 const spriteExtent = spriteHalfSize / SPRITE_RADIUS;
 const sprites = LEVELS.map((_, level) => {
   const image = document.createElement('canvas');
@@ -89,7 +89,7 @@ function unlock(level) {
 }
 function updateCollection() {
   $('collection-count').textContent = `${unlocked + 1}/${LEVELS.length}`;
-  $('evolution-strip').replaceChildren();
+  $('evolution-strip').textContent = '';
   Array.from({length: 6}, (_, index) => Math.round(index * LAST_LEVEL / 5)).forEach((level, index) => {
     if (index) {
       const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.textContent = '›'; arrow.setAttribute('aria-hidden','true');
@@ -164,14 +164,31 @@ function openDialog(html) {
   dialogWasPaused = paused;
   pointerId = null; world.paused = true;
   $('dialog-content').innerHTML = html;
-  $('game-dialog').showModal();
+  const dialog = $('game-dialog');
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else {
+    dialog.setAttribute('open', ''); dialog.open = true;
+    dialog.classList.add('dialog-fallback'); document.body.classList.add('dialog-visible');
+    $('close-dialog').focus();
+  }
 }
 function closeDialog() {
-  if ($('game-dialog').open) $('game-dialog').close();
+  const dialog = $('game-dialog');
+  if (!dialog.open) return;
+  if (typeof dialog.close === 'function') dialog.close();
+  else {
+    dialog.removeAttribute('open'); dialog.open = false;
+    document.body.classList.remove('dialog-visible');
+    resumeAfterDialog();
+  }
 }
-$('game-dialog').addEventListener('close',() => {
+function resumeAfterDialog() {
   setPause(dialogWasPaused);
   if (lastFocus?.isConnected) lastFocus.focus({preventScroll:true});
+}
+$('game-dialog').addEventListener('close', resumeAfterDialog);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && $('game-dialog').classList.contains('dialog-fallback')) closeDialog();
 });
 $('close-dialog').onclick = closeDialog;
 $('game-dialog').addEventListener('click',event => {
@@ -221,18 +238,41 @@ function drop() {
 canvas.addEventListener('pointerdown',event => {
   if(event.button!==0 || !started || world.paused || world.phase!=='playing') return;
   event.preventDefault(); pointerId=event.pointerId;
-  canvas.setPointerCapture(pointerId); aim(event); activateAudio();
+  if (typeof canvas.setPointerCapture === 'function') canvas.setPointerCapture(pointerId);
+  aim(event); activateAudio();
 });
 canvas.addEventListener('pointermove',event => { if(event.pointerId===pointerId || (event.pointerType==='mouse' && !world.paused)) aim(event); });
 canvas.addEventListener('pointerup',event => {
   if(event.pointerId!==pointerId) return;
   aim(event); pointerId=null;
-  if(canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  if(typeof canvas.hasPointerCapture === 'function' && canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   drop();
 });
 canvas.addEventListener('pointercancel',() => {pointerId=null;});
 canvas.addEventListener('lostpointercapture',() => {pointerId=null;});
 canvas.addEventListener('contextmenu',event=>event.preventDefault());
+if (typeof window.PointerEvent === 'undefined') {
+  let touchActive = false, mouseActive = false;
+  canvas.addEventListener('touchstart', event => {
+    if (!started || world.paused || world.phase !== 'playing') return;
+    event.preventDefault(); touchActive = true; aim(event.touches[0]); activateAudio();
+  }, {passive:false});
+  canvas.addEventListener('touchmove', event => {
+    if (!touchActive) return;
+    event.preventDefault(); aim(event.touches[0]);
+  }, {passive:false});
+  canvas.addEventListener('touchend', event => {
+    if (!touchActive) return;
+    event.preventDefault(); aim(event.changedTouches[0]); touchActive = false; drop();
+  }, {passive:false});
+  canvas.addEventListener('touchcancel', () => {touchActive = false;});
+  canvas.addEventListener('mousedown', event => {
+    if (event.button !== 0 || !started || world.paused) return;
+    event.preventDefault(); mouseActive = true; aim(event);
+  });
+  window.addEventListener('mousemove', event => {if (mouseActive) aim(event);});
+  window.addEventListener('mouseup', event => {if (mouseActive) {mouseActive = false; aim(event); drop();}});
+}
 canvas.addEventListener('keydown',event => {
   if(!started || world.paused || world.phase!=='playing')return;
   if(['ArrowLeft','ArrowRight',' '].includes(event.key)) event.preventDefault();
@@ -255,7 +295,11 @@ function resize() {
   ctx.setTransform(canvas.width/width,0,0,canvas.height/height,0,0);
   world.resize(width,height-12);
 }
-new ResizeObserver(resize).observe($('board'));
+if (typeof ResizeObserver === 'function') new ResizeObserver(resize).observe($('board'));
+else {
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', resize);
+}
 function bunny(x,y,r,level,angle=0,alpha=1) {
   ctx.save();ctx.globalAlpha=alpha;ctx.translate(x,y);ctx.rotate(angle);
   ctx.drawImage(sprites[level],-r*spriteExtent,-r*spriteExtent,r*spriteExtent*2,r*spriteExtent*2);ctx.restore();
@@ -298,11 +342,11 @@ function render(time) {
   const dt=lastFrame?Math.min((time-lastFrame)/1000,.05):0; lastFrame=time;
   if(started && !world.paused)world.step(dt);
   drawBackground();
-  for(const [id, age] of mergePulses) {
+  mergePulses.forEach((age, id) => {
     const nextAge = age + (world.paused ? 0 : dt);
     if(nextAge >= .28 || !world.bodies.some(body => body.id === id)) mergePulses.delete(id);
     else mergePulses.set(id, nextAge);
-  }
+  });
   for(const body of world.bodies) {
     const age = mergePulses.get(body.id);
     const scale = age === undefined ? 1 : 1 + .09 * Math.sin(Math.PI * age / .28);
@@ -334,12 +378,31 @@ if(saved?.game && world.restore(saved.game) && world.phase==='playing'){
   world.bodies.forEach(b=>unlock(b.level));setPause(true);
 }else { world.reset();world.paused=true;$('pause-button').disabled=true; }
 $('best').textContent=best;
-welcomeArt();updateCollection();updateSound();updateStats();
-drawTinyBunny($('brand-art'),0);
-const iconCanvas=document.createElement('canvas');iconCanvas.width=iconCanvas.height=128;drawTinyBunny(iconCanvas,0);
-document.querySelector('link[rel="icon"]').href=iconCanvas.toDataURL();
-document.querySelector('link[rel="apple-touch-icon"]').href=iconCanvas.toDataURL();
+function refreshArtwork(progress) {
+  if (progress && progress.loaded === progress.total && $('load-status')) {
+    $('load-status').textContent = '拖动瞄准 · 松手落下';
+  }
+  sprites.forEach((image, level) => {
+    const context = image.getContext('2d'); context.clearRect(0, 0, image.width, image.height);
+    drawBunny(context, spriteHalfSize, spriteHalfSize, SPRITE_RADIUS, level);
+  });
+  welcomeArt(); updateCollection(); lastNext = -1; updateStats();
+  drawTinyBunny($('brand-art'),0);
+  const iconCanvas=document.createElement('canvas');iconCanvas.width=iconCanvas.height=128;drawTinyBunny(iconCanvas,0);
+  document.querySelector('link[rel="icon"]').href=iconCanvas.toDataURL();
+  document.querySelector('link[rel="apple-touch-icon"]').href=iconCanvas.toDataURL();
+  if ($('game-dialog').open && $('collection-grid')) {
+    Array.from($('collection-grid').querySelectorAll('canvas')).forEach((icon,level)=>drawTinyBunny(icon,level));
+  }
+  if ($('result-art')) drawTinyBunny($('result-art'),Math.max(1,Math.min(unlocked,LAST_LEVEL)));
+}
+refreshArtwork(); updateSound();
 $('start-button').disabled=false;
 $('start-button').innerHTML='开始合成 <span aria-hidden="true">♡</span>';
-if (!assetLoaded) toast('兔兔照片没加载好，刷新页面可重试', 5000);
+if (window.__bunnyReady) window.__bunnyReady();
+loadRabbitAssets(refreshArtwork).then(loaded => {
+  const status = $('load-status');
+  if (status) status.textContent = loaded ? '拖动瞄准 · 松手落下' : '照片暂未加载好，也可以先玩';
+  if (!loaded) toast('兔兔照片加载慢，可以先玩，刷新后重试', 5000);
+}).catch(error => console.warn('Rabbit photos could not be decoded', error));
 requestAnimationFrame(render);

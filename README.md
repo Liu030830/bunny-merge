@@ -12,7 +12,9 @@
 
 ## 本地运行
 
-通过 HTTP 静态服务器运行此目录。不要直接双击 index.html，因为浏览器会限制本地 JavaScript 模块加载。
+index.html 是自包含版本，脚本、样式与三张兔子图集均已内嵌，打开后不再请求其他模块或图片。部署时只需要这个 HTML 文件。
+
+可以通过 HTTP 静态服务器运行此目录，无需安装运行时依赖。
 
 例如安装 Python 后运行：
 
@@ -24,6 +26,8 @@ python -m http.server 8000
 
 ## 托管
 
-GitHub Pages 发布源为 main 分支的根目录。保留 assets/、vendor/ 和 .nojekyll，所有资源使用相对路径。
+GitHub Pages 发布源为 main 分支的根目录，保留 .nojekyll。内嵌脚本按 Safari 11 / ES2017 目标编译，补充旧版浏览器 API 的回退；照片异步解码，失败时可先用基础造型游玩。启动错误或等待超时会显示重试入口。
+
+开发源码为 app.mjs、physics.mjs、bunny-models.mjs、rabbit-shapes.mjs 与 style.css，图集和物理引擎源码分别在 assets/ 和 vendor/。安装 Node.js 后运行 npm install，再运行 npm run build 重新生成 index.html；npm test 运行物理与启动回归检查。
 
 物理引擎采用 Matter.js 0.20.0，其 MIT 许可见 vendor/LICENSE。清除浏览器数据会清空本地最高分和游戏进度；不同网站的进度各自保存。
